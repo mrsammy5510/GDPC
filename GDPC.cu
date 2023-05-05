@@ -14,7 +14,11 @@
 #include <thrust/sort.h>
 #include <thrust/execution_policy.h>
 
+
+
 #include <cuda_runtime.h>
+
+#define INTMAX 2147483647 
 
 using namespace std;
 
@@ -27,7 +31,6 @@ ofstream dist_tmp_file("dist_tmp.txt");
 ofstream VP_tree_file("VP_tree.txt");
 ofstream leaf_file("leaf.txt");
 ofstream tmp_file("tmp.txt");
-
 
 typedef struct VP_node
 {
@@ -201,7 +204,7 @@ __global__ void get_dist(float* datapoints, int dim, int* ids, VP_node* VP, int 
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i < size)
     {
-            dist_tmp[i] = dist(&datapoints[VP[VP_id].vp * dim], &datapoints[ids[i] * dim], dim);
+        dist_tmp[i] = dist(&datapoints[VP[VP_id].vp * dim], &datapoints[ids[i] * dim], dim);
     }
 }
 
@@ -269,11 +272,11 @@ void recur_build_VP_tree(int dim, int* ids, int ids_size,
         cudaMemcpy(dist_tmp, d_dist_tmp, size * sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(ids, d_ids, size * sizeof(int), cudaMemcpyDeviceToHost);
         
-        /*
+        
         cudaFree(d_ids);
         cudaFree(d_VP);
         cudaFree(d_dist_tmp);
-        */
+         
         
         VP[VP_id].rad = dist_tmp[mid];
         int* ids_left = (int* )malloc(sizeof(int) * mid);
@@ -346,112 +349,164 @@ void print_VP_tree(VP_node* VP, leaf_node* leaf, int VP_size, int leaf_size)
     }
 }
 
-__global__ void GDPC_rho(float* d_datapoints, VP_node* d_VP, leaf_node* d_leaf, int VP_size, int dim, float dc, int* d_rho,
-                        d_vector<int>* cover_leaves)
+__global__ void GDPC_rho(float* d_datapoints, VP_node* d_VP, leaf_node* d_leaf, int VP_size, int dim, float dc, int* d_rho
+                        , int data_size)
 {   
     unsigned int pid = blockIdx.x * blockDim.x + threadIdx.x;
-
-    cover_leaves[pid] = *(new d_vector<int>);
-
-    d_vector<int> stack;
-    stack.push_back(0);
-
-    while(stack.size()!=0)
+    if(pid < data_size)
     {
+        int leaf_tmp;
+        
+        d_vector<int> stack;
+        stack.push_back(0);
+        
 
-        int vp_now = stack.pop_back();
-        if(vp_now >= VP_size)
-        {           
-            int leaf_tmp = 0;
-            while(d_leaf[vp_now - VP_size].id[leaf_tmp] != -1 && leaf_tmp <= 31)
-            {
-                cover_leaves[pid].push_back(d_leaf[vp_now - VP_size].id[leaf_tmp]);
-                leaf_tmp++;
-            }
-        }
-        else
+        while(stack.size()!=0)
         {
-            if(dist(&d_datapoints[d_VP[vp_now].vp * dim], &d_datapoints[pid * dim], dim) - dc <= d_VP[vp_now].rad)
-            {
-                stack.push_back(2 * vp_now + 1);
+            int vp_now = stack.pop_back();
+
+            if(vp_now >= VP_size)
+            {           
+                leaf_tmp = 0;
+                while(d_leaf[vp_now - VP_size].id[leaf_tmp] != -1 && leaf_tmp <= 31)
+                {
+                    int current_leaf_pt = d_leaf[vp_now - VP_size].id[leaf_tmp];
+                    if(dist(&d_datapoints[current_leaf_pt * dim], &d_datapoints[pid * dim], dim) <= dc)
+                    {
+                        d_rho[pid]++;
+                    }
+                    leaf_tmp++;
+                }
             }
-            if(dist(&d_datapoints[d_VP[vp_now].vp * dim], &d_datapoints[pid * dim], dim) + dc >= d_VP[vp_now].rad)
+            else
             {
-                stack.push_back(2 * vp_now + 2);
+                if(dist(&d_datapoints[d_VP[vp_now].vp * dim], &d_datapoints[pid * dim], dim) - dc <= d_VP[vp_now].rad)
+                {
+                    stack.push_back(2 * vp_now + 1);
+                }
+                if(dist(&d_datapoints[d_VP[vp_now].vp * dim], &d_datapoints[pid * dim], dim) + dc >= d_VP[vp_now].rad)
+                {
+                    stack.push_back(2 * vp_now + 2);
+                }
+                
             }
-            
         }
     }
     
-    for(int i = 0; i < cover_leaves[pid].size(); i++)
-    {   
-        if(dist(&d_datapoints[cover_leaves[pid].pos(i) * dim], &d_datapoints[pid * dim], dim) <= dc)
-        {
-            d_rho[pid]++;
-        }
-    }
-
-    /*
-    unsigned int pid = blockIdx.x * blockDim.x + threadIdx.x;
-    d_vector<int> cover_leaves;
-    d_vector<int> stack;
-    stack.push_back(0);
-
-    while(stack.size()!=0)
-    {
-
-        int vp_now = stack.pop_back();
-        if(vp_now >= VP_size)
-        {           
-            int leaf_tmp = 0;
-            while(d_leaf[vp_now - VP_size].id[leaf_tmp] != -1 && leaf_tmp <= 31)
-            {
-                cover_leaves.push_back(d_leaf[vp_now - VP_size].id[leaf_tmp]);
-                leaf_tmp++;
-            }
-        }
-        else
-        {
-            if(dist(&d_datapoints[d_VP[vp_now].vp * dim], &d_datapoints[pid * dim], dim) - dc <= d_VP[vp_now].rad)
-            {
-                stack.push_back(2 * vp_now + 1);
-            }
-            if(dist(&d_datapoints[d_VP[vp_now].vp * dim], &d_datapoints[pid * dim], dim) + dc >= d_VP[vp_now].rad)
-            {
-                stack.push_back(2 * vp_now + 2);
-            }
-            
-        }
-    }
-    
-    for(int i = 0; i < cover_leaves.size(); i++)
-    {   
-        if(dist(&d_datapoints[cover_leaves.pos(i) * dim], &d_datapoints[pid * dim], dim) <= dc)
-        {
-            d_rho[pid]++;
-        }
-    }
-    */
 }
 
-__global__ void GDPC_result()
+__global__ void GDPC_result(float* d_datapoints, int* d_rho, int* d_dep_neighbor, float* d_dep_dist, 
+                            int data_size, int dim, VP_node* d_VP, leaf_node* d_leaf, int VP_size, float dc, int* d_ids,
+                            float* d_gamma)
 {
+    unsigned int pid = blockIdx.x * blockDim.x + threadIdx.x;
 
+    if(pid < data_size)
+    {
+        int dep_neighbor_cand = -1;
+        float min_dep_dist = INTMAX;
+        
+        int stack[20];      //For larger datasets, this needs to be change
+        int top = -1;
+
+        
+        top++;      //Top point to the lastest insert value
+        stack[top] = 0; //push
+
+        while(top != -1)
+        {
+            int vp_now = stack[top];
+            top--;
+            
+            if(vp_now >= VP_size)
+            {           
+                int leaf_tmp = 0;
+                while(d_leaf[vp_now - VP_size].id[leaf_tmp] != -1 && leaf_tmp <= 31)
+                {
+                    int current_leaf_pt = d_leaf[vp_now - VP_size].id[leaf_tmp];
+                    if(d_rho[current_leaf_pt] > d_rho[pid])
+                    {
+                        float dep_dist = dist(&d_datapoints[current_leaf_pt * dim], &d_datapoints[pid * dim], dim);
+
+                        if(dep_dist < min_dep_dist)  //If the dependent distance is smaller than min, update dep_nei and dep_dist
+                        {
+                            min_dep_dist = dep_dist;
+                            dep_neighbor_cand = current_leaf_pt;
+                        }
+                    }
+                    leaf_tmp++;
+                }
+            }
+            else
+            {
+                if(dist(&d_datapoints[d_VP[vp_now].vp * dim], &d_datapoints[pid * dim], dim) - dc <= d_VP[vp_now].rad)
+                {
+                    top++;
+                    stack[top] = 2 * vp_now + 1;
+                }
+                if(dist(&d_datapoints[d_VP[vp_now].vp * dim], &d_datapoints[pid * dim], dim) + dc >= d_VP[vp_now].rad)
+                {
+                    top++;
+                    stack[top] = 2 * vp_now + 2;
+                }
+                
+            }
+        }
+        
+        //-----------------------------------------------------------
+        float max_dep_dist = 0;
+
+
+        if(dep_neighbor_cand == -1)  //point who has the maximum rho in it's cover leave, find dep_neighbor globally
+        {
+            for(int i = 0; i < data_size; i++)
+            {
+                float dep_dist = dist(&d_datapoints[i * dim], &d_datapoints[pid * dim], dim);
+                if(dep_dist > max_dep_dist)
+                {
+                    max_dep_dist = dep_dist;
+                }
+
+                if(d_rho[i] > d_rho[pid])
+                {   
+                    
+                    if(dep_dist < min_dep_dist)
+                    {
+                        min_dep_dist = dep_dist;
+                        dep_neighbor_cand = i;
+                    }
+                }
+            }
+            if(dep_neighbor_cand == -1)     //Point who has the highest density in the whole dataset
+            {
+                d_dep_dist[pid] = max_dep_dist;
+                d_dep_neighbor[pid] =  pid;
+            }
+        }
+        if(dep_neighbor_cand != -1)
+        {
+            d_dep_dist[pid] = min_dep_dist;
+            d_dep_neighbor[pid] =  dep_neighbor_cand;
+        }
+        
+    }
+    d_ids[pid] = pid;
+    d_gamma[pid] = d_rho[pid] * d_dep_dist[pid];
 }
 
 int main()
 {
-
+    timespec t1, t2;
     vector<vector<float>> datapoints_vector;
-    datapoints_vector = readcsv("./csv file/S2.csv");
+    datapoints_vector = readcsv("./csv file/3D_spatial_network.csv");
     //datapoints_vector = readcsv("./csv file/3D_spatial_network.csv");
     //datapoints_vector = readcsv("./GDPC/csv file/S2.csv");
-    //datapoints_vector = readcsv("./csv file/3D_spatial_network.csv");
+    //datapoints_vector = readcsv("./GDPC/csv file/3D_spatial_network.csv");
     normalize(datapoints_vector);
     int data_size = datapoints_vector.size();
     int dim = datapoints_vector[0].size();
     
-    float dc = 0.00969449058;
+    float dc = 0.01;
     
     
     //flatten the datapoints into 1D
@@ -470,7 +525,8 @@ int main()
     }
     leaf_node leaf[(int)pow(2, h)] = {};
     
-
+    
+    clock_gettime(CLOCK_MONOTONIC, &t1);
     //-----------------------------------------------------------------
     cudaDeviceReset();  //Clean up the device
     cudaDeviceSynchronize();    // Warm up
@@ -490,10 +546,11 @@ int main()
     (tmp.tv_sec - t_building_VP_tree.tv_sec)*1000 + 
     (tmp.tv_nsec - t_building_VP_tree.tv_nsec)/1000000 << "ms" << endl;
     
-    print_VP_tree(VP, leaf, (int)pow(2, h) - 1, (int)pow(2, h));
+    //print_VP_tree(VP, leaf, (int)pow(2, h) - 1, (int)pow(2, h));
 
-    dim3 block (32);
+    dim3 block (512);
     dim3 grid ((data_size + block.x - 1)/block.x); 
+
     int* d_rho;
     VP_node* d_VP;
     leaf_node* d_leaf;
@@ -505,22 +562,72 @@ int main()
     cudaMemcpy(d_VP, VP, ((int)pow(2, h) - 1) * sizeof(VP_node), cudaMemcpyHostToDevice);
     cudaMemcpy(d_leaf, leaf, (int)pow(2, h) * sizeof(leaf_node), cudaMemcpyHostToDevice);
 
-    d_vector<int>* cover_leaves;
-    cudaMalloc((void**)&cover_leaves, data_size * sizeof(d_vector<int>)); 
-
-    GDPC_rho<<<grid, block>>>(d_datapoints, d_VP, d_leaf, (int)pow(2, h) - 1, dim, dc, d_rho, cover_leaves);
-    cudaDeviceSynchronize();
-    GDPC_result<<<grid, block>>();
-
-
-    int* rho;
-    rho = (int*)malloc(sizeof(int) * data_size);
-    cudaMemcpy(rho, d_rho, sizeof(int) * data_size, cudaMemcpyDeviceToHost);
-
+    int* d_dep_neighbor;
+    float* d_dep_dist;
+    cudaMalloc((void**)&d_dep_neighbor, data_size * sizeof(int));
+    cudaMalloc((void**)&d_dep_dist, data_size * sizeof(float));
     
+    int* d_ids;
+    float* d_gamma;
+    cudaMalloc((void**)&d_ids, data_size * sizeof(int));
+    cudaMalloc((void**)&d_gamma, data_size * sizeof(float));
+
+
+
+    GDPC_rho<<<grid, block>>>(d_datapoints, d_VP, d_leaf, (int)pow(2, h) - 1, dim, dc, d_rho, data_size);
+    CHECK(cudaDeviceSynchronize());
+    GDPC_result<<<grid, block>>>(d_datapoints, d_rho, d_dep_neighbor, d_dep_dist, data_size, dim, d_VP, d_leaf
+                                , (int)pow(2, h) - 1, dc, d_ids, d_gamma);
+    CHECK(cudaDeviceSynchronize());
+
+    int* dep_neighbor;
+    dep_neighbor = (int*)malloc(sizeof(int) * data_size);
+    cudaMemcpy(dep_neighbor, d_dep_neighbor, sizeof(int) * data_size, cudaMemcpyDeviceToHost);
+    
+    
+    float* gamma;
+    gamma = (float*)malloc(sizeof(float) * data_size);
+    cudaMemcpy(gamma, d_gamma, sizeof(float) * data_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(ids, d_ids, sizeof(int) * data_size, cudaMemcpyDeviceToHost);
+
+    quickSort(gamma, 0, data_size - 1, ids);
+
+
+    int peak_num = 15;
+    vector<int> peaks(peak_num);
+    int* cluster_result;
+    cluster_result = (int*)malloc(sizeof(int) * data_size);
+
+
+    for(int i = 0; i < peak_num; i++)
+    {
+        peaks[i] = ids[data_size - i - 1];
+    }
+    
+    for(int i = 0; i < data_size; i++)
+    {
+        int pt_now = i;
+        while(find(peaks.begin(), peaks.end(), pt_now) == peaks.end()) //If point i is not a density peak
+        {
+            pt_now = dep_neighbor[pt_now];
+        }
+        //Put the point to the cluster number of it's dependent peaks number
+        cluster_result[i] = distance(peaks.begin(), find(peaks.begin(), peaks.end(), pt_now));
+        //-------------------------------------------------------------------------------------
+    }
+    
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+    cout << "time passed for GDPC is: " << 
+    (t2.tv_sec - t1.tv_sec)*1000 + 
+    (t2.tv_nsec - t1.tv_nsec)/1000000 << "ms" << endl;
+
+
+
     for(int i = 0; i <data_size; i++)
     {
         //printf("rho %d = %d\t", i, rho[i]);
+        //printf("point %d nei = %d, dist = %f\t", i, dep_neighbor[i], dep_dist[i]);
+        cluster_result_file<<"Point "<<i<<" belongs to cluster "<< cluster_result[i]<<endl; 
     }
     
      
